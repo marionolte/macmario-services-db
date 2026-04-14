@@ -104,9 +104,6 @@
             </plugin>
         </plugins>
     </build>
-<<<<<<< HEAD
-</project>
-=======
-</project>
 
->>>>>>> 83e1f45 (missing pom)
+
+</project>
