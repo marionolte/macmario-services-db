@@ -15,7 +15,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.Properties;
+import java.util.Vector;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.LoggerFactory;
 
@@ -157,6 +160,36 @@ public class DBConfig extends AppVersion {
         insertDefaults();
     }
 
+    public   static void addConfigs(Object[][] obj) {
+        
+         String sql = """
+            INSERT INTO config_entries
+                (config_key, config_value, description, category, data_type, required)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """;
+
+         try (Connection c = getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            for (Object[] row : obj) {
+                if ( obj.length >= 6 ) {
+                    ps.setString(1, (String) row[0]);
+                    ps.setString(2, (String) row[1]);
+                    ps.setString(3, (String) row[2]);
+                    ps.setString(4, (String) row[3]);
+                    ps.setString(5, (String) row[4]);
+                    ps.setBoolean(6, (Boolean) row[5]);
+                    ps.addBatch();
+                }
+            }
+            int[] result = ps.executeBatch();
+            log.info("Inserted {} default configuration entries.", result.length);
+
+        } catch (SQLException e) {
+            log.error("Failed to insert default configuration", e);
+        }
+         
+    }
     private static void insertDefaults() {
         String sql = """
             INSERT INTO config_entries
@@ -166,10 +199,10 @@ public class DBConfig extends AppVersion {
 
         Object[][] defaults = {
             // Application
-            {"app.name",        "Vermieter App",     "Display name of the application",      "Application", "STRING",  true},
+            {"app.name",        "Config App",     "Display name of the application",      "Application", "STRING",  true},
             {"app.version",     "1.0",               "Current application version",          "Application", "STRING",  false},
             {"app.debug",       "false",             "Enable debug mode (true/false)",       "Application", "BOOLEAN", false},
-            {"app.base.url",    "http://localhost:18080/nk", "Base URL of the application",  "Application", "URL",     true},
+            {"app.base.url",    "http://localhost:18080/config", "Base URL of the application",  "Application", "URL",     true},
 
             // Database
             {"db.type",             "mysql",          "Database server hostname",                  "Database",    "STRING",  true},
@@ -180,6 +213,14 @@ public class DBConfig extends AppVersion {
             {"db.password",         "changeit",       "Database password",                         "Database",    "PASSWORD",true},
             {"db.pool.size",        "10",             "Maximum number of DB pool connections",     "Database",    "INTEGER", false},
 
+            {"Proxy.type",             "transparent",    "Proxy server type",                      "Proxy",    "STRING",  true},
+            {"Proxy.host",             "localhost",      "Proxy server hostname",                  "Proxy",    "STRING",  true},
+            {"Proxy.port",             "1080",           "Proxy server port",                      "Proxy",    "INTEGER", true},
+            {"Proxy.name",             "app",            "Proxy / schema name",                    "Proxy",    "STRING",  true},
+            {"Proxy.user",             "admin",          "Proxy username",                         "Proxy",    "STRING",  true},
+            {"Proxy.password",         "changeit",       "Proxy password",                         "Proxy",    "PASSWORD",true},
+            {"Proxy.apps",         "HTTP,HTTPS,SFTP,SMTP,IMAP",    "Proxy application",                      "Proxy",    "STRING",  true},
+            
             // Ldap
             {"ldap.host",      "ldap.example.com", "Ldap host",                          "Ldap",        "STRING",  false},
             {"ldap.port",      "389",              "Ldap port",                          "Ldap",        "INTEGER", false},
@@ -192,14 +233,14 @@ public class DBConfig extends AppVersion {
             {"ldap.server.user",      "cn=admin",         "Ldap username / from address",              "Ldap",        "STRING",  false},
             {"ldap.server.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
             {"ldap.server.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
-            {"ldap.server.config",    "",                 "Ldap proxy config",                        "Ldap",        "STRING",false},
-            {"ldap.proxy.host",      "ldap.example.com", "Ldap server host",                          "Ldap",        "STRING",  false},
-            {"ldap.proxy.port",      "389",              "Ldap server port",                          "Ldap",        "INTEGER", false},
-            {"ldap.proxy.user",      "cn=proxyadmin",    "Ldap username / from address",              "Ldap",        "STRING",  false},
-            {"ldap.proxy.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
-            {"ldap.proxy.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
+            {"ldap.proxy.config",    "",                 "Ldap proxy config",                        "Ldap",        "STRING",false},
+            {"ldap.proxy.host",      "ldap.example.com",  "Ldap server host",                          "Ldap",        "STRING",  false},
+            {"ldap.proxy.port",      "389",               "Ldap server port",                          "Ldap",        "INTEGER", false},
+            {"ldap.proxy.user",      "cn=proxyadmin",     "Ldap username / from address",              "Ldap",        "STRING",  false},
+            {"ldap.proxy.password",  "",                  "Ldap password",                             "Ldap",        "PASSWORD",false},
+            {"ldap.proxy.tls",       "true",              "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
 
-            // Mail
+            // Mail 
             {"mail.smtp.host",      "smtp.example.com","SMTP server host",                          "Mail",        "STRING",  false},
             {"mail.smtp.port",      "587",              "SMTP server port",                          "Mail",        "INTEGER", false},
             {"mail.smtp.user",      "noreply@example.com","SMTP username / from address",            "Mail",        "STRING",  false},
@@ -221,25 +262,9 @@ public class DBConfig extends AppVersion {
             {"feature.registration", "true",            "Allow new user registration",               "Features",    "BOOLEAN", false},
             {"feature.api.enabled",  "true",            "Enable REST API endpoints",                 "Features",    "BOOLEAN", false},
         };
+        
+        addConfigs(defaults);
 
-        try (Connection c = getConnection();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            for (Object[] row : defaults) {
-                ps.setString(1, (String) row[0]);
-                ps.setString(2, (String) row[1]);
-                ps.setString(3, (String) row[2]);
-                ps.setString(4, (String) row[3]);
-                ps.setString(5, (String) row[4]);
-                ps.setBoolean(6, (Boolean) row[5]);
-                ps.addBatch();
-            }
-            int[] result = ps.executeBatch();
-            log.info("Inserted {} default configuration entries.", result.length);
-
-        } catch (SQLException e) {
-            log.error("Failed to insert default configuration", e);
-        }
     }
 
     public static void shutdown() {
@@ -480,11 +505,11 @@ public class DBConfig extends AppVersion {
         return false;
     }
 
-    String getAllKeys() { return getAllKeys(""); }
-    String getAllKeys(String part) {
+    public Properties getAllKeyProperty() { return this.getAllKeyProperty(""); }
+    public Properties getAllKeyProperty(String part) {
         init();
         part = ( isNullOrEmpty(part) )?"":part;
-        StringBuilder sw=new StringBuilder();
+        Properties sw=new Properties();
         String sql = "SELECT config_key,config_value FROM config_entries";
         
         try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
@@ -493,11 +518,8 @@ public class DBConfig extends AppVersion {
                 while (  rs.next() ) {
                     String k = rs.getString("config_key");
                     String v = rs.getString("config_value");
-                    if ( k.toLowerCase().contains("password") ) {
-                        v="< "+( ( isNotNullOrEmpty(v) )?"SET":"NOT SET" ) + " >";
-                    }
                     if ( k.startsWith(part) ) {
-                        sw.append("\t").append(k).append(": ").append(v).append("\n");
+                        sw.put(k, v);
                     }
                 }
                 
@@ -508,7 +530,32 @@ public class DBConfig extends AppVersion {
                 log.error("Failed to select configuration", e);
             }
         
+        return sw;
+    }
+    
+    public String getAllKeys() { return getAllKeys(""); }
+    public String getAllKeys(String part) {
+        Properties p =this.getAllKeyProperty(part);
+        Enumeration<String> e = sortProp(p);
+        StringBuilder sw=new StringBuilder();
+        
+        while ( e.hasMoreElements() ) {
+            String k = e.nextElement();
+                    if ( k.startsWith(part) ) {
+                        sw.append("\t").append(k).append(": ").append(p.getProperty(k, "")).append("\n");
+                    }
+        }        
         return sw.toString();
+    }
+    
+    private Enumeration<String> sortProp(Properties p) {
+        Enumeration keysEnum = p.keys();
+        Vector<String> keyList = new Vector<String>();
+        while(keysEnum.hasMoreElements()){
+          keyList.add((String)keysEnum.nextElement());
+        }
+        Collections.sort(keyList);
+        return keyList.elements();  
     }
     
     public static DBConfig getInstance(){ 
