@@ -542,7 +542,18 @@ public class DBConfig extends AppVersion {
         while ( e.hasMoreElements() ) {
             String k = e.nextElement();
                     if ( k.startsWith(part) ) {
-                        sw.append("\t").append(k).append(": ").append(p.getProperty(k, "")).append("\n");
+                        sw.append("\t").append(k).append(": ");
+                        final String k1=k.toLowerCase();
+                        if (    k1.contains("password")
+                             || k1.contains("key")
+                             || k1.contains("secret")
+                           ) {
+                            String v=p.getProperty(k, "");
+                            sw.append("<").append(  (isNotNullOrEmpty(v)?"":" NOT") ).append(" SET >");
+                        } else  {
+                            sw.append(p.getProperty(k, ""));
+                        }
+                        sw.append("\n");
                     }
         }        
         return sw.toString();

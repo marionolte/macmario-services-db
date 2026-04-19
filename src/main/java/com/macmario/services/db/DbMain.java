@@ -12,6 +12,10 @@ public class DbMain extends AppVersion {
     
     public static void main(String[] args) {
         DBConfig conf = new DBConfig();
+        
+        for ( String s : args ) {
+            if ( s.equals("-d") ) { DBConfig.appDebug++; }
+        }
         System.out.println("");
         System.out.println("Type something (type 'quit' to exit):");
         try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
@@ -23,8 +27,11 @@ public class DbMain extends AppVersion {
                 line = reader.readLine().trim();
                 System.out.println("");
                 
-                if ("quit".equalsIgnoreCase(line.trim())) {
+                if ("quit".equalsIgnoreCase(line.trim()) || "q".equals(line.trim()) ) {
                     System.out.println("Quit command received. Goodbye!");
+                    break;
+                } else if ( "version".equalsIgnoreCase(line.trim())) {   
+                    System.out.println(conf.getAppInfo());
                     break;
                 } else {
                     String[] sp = line.split(" ");
@@ -40,7 +47,10 @@ public class DbMain extends AppVersion {
                                         break; }
                         case "add" : { addConfigKey(conf,line.substring("add ".length()));  break; }
                         case "del" : { delConfigKey(conf,line.substring("add ".length()));  break; }
-                        default:{ break; }
+                        default:{ 
+                            System.out.println("command: "+sp[0]+" not found; expect <set,get,list,add,del>");
+                            break; 
+                        }
                     }
                 }
                     
