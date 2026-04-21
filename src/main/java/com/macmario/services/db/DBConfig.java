@@ -15,9 +15,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.LoggerFactory;
@@ -90,6 +93,7 @@ public class DBConfig extends AppVersion {
         createSchema();
         seedDefaultsIfEmpty();
         log.info("DatabaseManager initialised successfully.");
+        log.info("allKeys"+getAllKeyProperty());
     }
     
     // ------------------------------------------------------------------ //
@@ -103,6 +107,12 @@ public class DBConfig extends AppVersion {
         }
         return DriverManager.getConnection(jdbcUrl, DB_USER, DB_PASSWORD);
     }
+    public static Connection getDbConnection() throws SQLException {
+        init();
+        return DriverManager.getConnection(getDbUrl(), getDbUsername(), getDbPassword());
+    }
+    
+    
     
     static String getMainJDBC(){ return jdbcUrl; }
     static String getMainUser(){ return DB_USER; }
@@ -129,9 +139,26 @@ public class DBConfig extends AppVersion {
             """;
         try (Connection c = getConnection(); Statement s = c.createStatement()) {
             s.execute(ddl);
-            log.info("Schema ready.");
+            log.info("schema table ready.");
+            initSessionTable(c);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create schema", e);
+        }
+    }
+    
+    public static void initSessionTable(Connection con) throws SQLException {
+        String sql = """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id   VARCHAR(64)  PRIMARY KEY,
+                user_id      VARCHAR(64),
+                data         TEXT,
+                created_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                expires_at   TIMESTAMP    NOT NULL
+            )
+        """;
+        try ( Statement stmt = con.createStatement()) {
+            stmt.execute(sql);
+            log.info("session table ready.");
         }
     }
 
@@ -365,7 +392,7 @@ public class DBConfig extends AppVersion {
     }
 
     private static Properties prop=null;
-    private static Properties getConfig(String part) {
+    public static Properties getConfig(String part) {
         init();
         if ( isNullOrEmpty(prop) || ! prop.getProperty("_part", "").equals(part) ) {
              prop=getProperty(part);
@@ -373,7 +400,7 @@ public class DBConfig extends AppVersion {
         }
         return prop;
     } 
-    public static String getDBbUrl() {
+    public static String getDbUrl() {
         Properties p = getConfig("db");
         
         return "jdbc:"+p.getProperty("db.driver", "mysql")+"://"+
@@ -505,8 +532,8 @@ public class DBConfig extends AppVersion {
         return false;
     }
 
-    public Properties getAllKeyProperty() { return this.getAllKeyProperty(""); }
-    public Properties getAllKeyProperty(String part) {
+    public static Properties getAllKeyProperty() { return getAllKeyProperty(""); }
+    public static Properties getAllKeyProperty(String part) {
         init();
         part = ( isNullOrEmpty(part) )?"":part;
         Properties sw=new Properties();
@@ -533,9 +560,9 @@ public class DBConfig extends AppVersion {
         return sw;
     }
     
-    public String getAllKeys() { return getAllKeys(""); }
-    public String getAllKeys(String part) {
-        Properties p =this.getAllKeyProperty(part);
+    public static String getAllKeys() { return getAllKeys(""); }
+    public static String getAllKeys(String part) {
+        Properties p = getAllKeyProperty(part);
         Enumeration<String> e = sortProp(p);
         StringBuilder sw=new StringBuilder();
         
@@ -559,7 +586,7 @@ public class DBConfig extends AppVersion {
         return sw.toString();
     }
     
-    private Enumeration<String> sortProp(Properties p) {
+    private static Enumeration<String> sortProp(Properties p) {
         Enumeration keysEnum = p.keys();
         Vector<String> keyList = new Vector<String>();
         while(keysEnum.hasMoreElements()){
@@ -567,6 +594,69 @@ public class DBConfig extends AppVersion {
         }
         Collections.sort(keyList);
         return keyList.elements();  
+    }
+    
+    
+    // CREATE — save a new session
+    public static String createSession(String userId, String data, int ttlMinutes) throws SQLException {
+        String sessionId = UUID.randomUUID().toString();
+        String sql = "INSERT INTO sessions (session_id, user_id, data, expires_at) VALUES (?, ?, ?, ?)";
+
+        try (Connection con = getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+
+            ps.setString(1, sessionId);
+            ps.setString(2, userId);
+            ps.setString(3, data);
+            ps.setTimestamp(4, Timestamp.valueOf(LocalDateTime.now().plusMinutes(ttlMinutes)));
+            ps.executeUpdate();
+        }
+        return sessionId;
+    }
+
+    // READ — retrieve a valid (non-expired) session
+    public static ResultSet getSession(String sessionId) throws SQLException {
+        String sql = "SELECT * FROM sessions WHERE session_id = ? AND expires_at > CURRENT_TIMESTAMP";
+
+        Connection con = getConnection();
+        PreparedStatement ps = con.prepareStatement(sql);
+        ps.setString(1, sessionId);
+        return ps.executeQuery();
+    }
+
+    // UPDATE — refresh session expiry
+    public void renewSession(String sessionId, int ttlMinutes) throws SQLException {
+        String sql = "UPDATE sessions SET expires_at = ? WHERE session_id = ?";
+
+        try (Connection con = getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+
+            ps.setTimestamp(1, Timestamp.valueOf(LocalDateTime.now().plusMinutes(ttlMinutes)));
+            ps.setString(2, sessionId);
+            ps.executeUpdate();
+        }
+    }
+
+    // DELETE — invalidate/logout
+    public static void deleteSession(String sessionId) throws SQLException {
+        String sql = "DELETE FROM sessions WHERE session_id = ?";
+
+        try (Connection con = getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+
+            ps.setString(1, sessionId);
+            ps.executeUpdate();
+        }
+    }
+
+    // CLEANUP — purge expired sessions
+    public static void purgeExpiredSessions() throws SQLException {
+        String sql = "DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP";
+
+        try (Connection con = getConnection();
+             Statement stmt = con.createStatement()) {
+            stmt.execute(sql);
+        }
     }
     
     public static DBConfig getInstance(){ 
