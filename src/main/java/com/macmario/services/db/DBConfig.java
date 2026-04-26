@@ -17,8 +17,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.Vector;
@@ -32,8 +34,12 @@ import org.slf4j.LoggerFactory;
 public class DBConfig extends AppVersion {
     
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(DBConfig.class);
+    
     private static ReadDir dir = null;
     private static Crypt crypt = new Crypt();
+    private static String defapp = "ROOT";
+    private static int dbSchemaVersion=1;
+    private static boolean dbSchemaVersionUpdate=false;
 
     // H2 file-based DB stored inside the webapp's data directory
     private static       String DB_NAME     = "configdb";
@@ -41,7 +47,7 @@ public class DBConfig extends AppVersion {
     private static       String DB_PASSWORD = "";
 
     private static String jdbcUrl;
-    private static final AtomicBoolean initialized = new AtomicBoolean(false); 
+    private static boolean initialized = false; 
     
     static {
         String base = System.getProperty("user.dir") + "/.config-app/";
@@ -62,11 +68,26 @@ public class DBConfig extends AppVersion {
                 + ";AUTO_SERVER=TRUE;DB_CLOSE_ON_EXIT=TRUE;MODE=MYSQL;";
         
     }
+    
+    public DBConfig(String ap) {
+        
+        defapp=( isNotNullOrEmpty(ap) )?ap:this.defapp;
+        init(defapp);
+        
+    }
 
+    private static HashMap<String, String> appMap=new HashMap<>();
+    
     /** Call once at application startup. */
-    public static void init() {
-        if (initialized.getAndSet(true)) return;
-
+    public static boolean init() { return init(defapp); }
+    public static boolean init(String app) {
+        app=(isNullOrEmpty(app))?defapp:app.toUpperCase();
+        boolean b=getBoolean( appMap.getOrDefault(app, "0" ) );
+        log.info("DBConfig::init ("+app+") init:"+initialized+":  appinit:"+b);
+        
+        if (initialized  && b ) return true;
+        appMap.put(app, "0" );
+        
         // Store DB files in <tomcat-work>/config-data/ so they survive redeployments
         String base = System.getProperty("user.dir");
         ReadDir dir = new ReadDir(base);
@@ -75,8 +96,8 @@ public class DBConfig extends AppVersion {
             dir = new ReadDir(base);
         }            
         if ( ! dir.isDirectory() ) {
-            boolean b = dir.mkdirs();
-            log.info("BASE Directory created: ", b +"("+base+")");
+            boolean b1 = dir.mkdirs();
+            log.info("BASE Directory created: ", b1 +"("+base+")");
         }
         jdbcUrl = "jdbc:h2:file:" + base + "/" + DB_NAME
                 + ";AUTO_SERVER=TRUE;DB_CLOSE_ON_EXIT=TRUE;MODE=MYSQL;";
@@ -87,29 +108,46 @@ public class DBConfig extends AppVersion {
         try {
             Class.forName("org.h2.Driver");
         } catch (ClassNotFoundException e) {
-            throw new RuntimeException("H2 driver not found", e);
+             initialized=false;
+             return initialized;
         }
 
+        log.info("DBConfig::init - now create schema "+app);
+        // create config_entries if not exist
         createSchema();
-        seedDefaultsIfEmpty();
+        log.info("DBConfig::init - now fill empty schema");
+        seedDefaultsIfEmpty(app);
         log.info("DatabaseManager initialised successfully.");
-        log.info("allKeys"+getAllKeyProperty());
+        //    log.info("allKeys"+getAllKeyProperty(app));
+        initialized=true;
+        appMap.put(app, "1");
+        return getBoolean( appMap.get(app) );
+    }
+    
+    public static void setApp(String ap) {
+        if ( isAppExist(ap) ) {
+            init(ap);
+        }    
     }
     
     // ------------------------------------------------------------------ //
     //  Connection                                                          //
     // ------------------------------------------------------------------ //
 
-    public static Connection getConnection() throws SQLException {
-        init();
+    private static Connection getConnection() throws SQLException {
+        //if ( ! initialized )  init();
         if (jdbcUrl == null) {
             throw new IllegalStateException("DatabaseManager.init() has not been called yet.");
         }
         return DriverManager.getConnection(jdbcUrl, DB_USER, DB_PASSWORD);
     }
     public static Connection getDbConnection() throws SQLException {
-        init();
+        //init();
         return DriverManager.getConnection(getDbUrl(), getDbUsername(), getDbPassword());
+    }
+    public static Connection getDbConnection(String app) throws SQLException {
+        //init(app);
+        return DriverManager.getConnection(getDbUrl(app), getDbUsername(app), getDbPassword(app));
     }
     
     
@@ -123,10 +161,12 @@ public class DBConfig extends AppVersion {
     //  Schema                                                              //
     // ------------------------------------------------------------------ //
 
+    
     private static void createSchema() {
         String ddl = """
             CREATE TABLE IF NOT EXISTS config_entries (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+                config_app  VARCHAR(255) NOT NULL DEFAULT 'ROOT',     
                 config_key  VARCHAR(255) NOT NULL UNIQUE,
                 config_value VARCHAR(2048),
                 description VARCHAR(1024),
@@ -141,9 +181,62 @@ public class DBConfig extends AppVersion {
             s.execute(ddl);
             log.info("schema table ready.");
             initSessionTable(c);
+            initAppsTable(c);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create schema", e);
         }
+    }
+    
+    private static void initAppsTable(Connection con) throws SQLException {
+        String sql = """
+            CREATE TABLE IF NOT EXISTS apps (
+                app          VARCHAR(64)  NOT NULL,
+                app_version  VARCHAR(32)  NOT NULL,
+                created_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                updated_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+            )
+        """;
+       
+        try ( Statement stmt = con.createStatement()) {
+            stmt.execute(sql);
+            log.info("session table ready.");
+        }
+        
+        
+        addApp("ROOT");
+    }
+    
+    public static String getAppList() {
+        StringBuilder sw = new StringBuilder("ROOT");
+        ArrayList<String> ar = new ArrayList<>();
+        String sql = """
+                     select * FROM apps
+                     """;
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+                ResultSet rs =ps.executeQuery();
+                System.out.println("DBConfig::APPS : "+rs.toString());
+                while (  rs.next() ) {
+                    String k = rs.getString("app");
+                    if ( ! ar.contains(k) && ! k.equals("ROOT") ) {
+                        ar.add(k);
+                    }
+                    
+                    int i = getInt( rs.getString("app_version") );
+                    if ( dbSchemaVersion > i ) {
+                        dbSchemaVersionUpdate=true;
+                    }
+                }
+                rs.close();
+                ps.close();
+                c.commit();
+        } catch (SQLException e) {
+            System.out.println(sql+"\nerror - "+e.getMessage()); e.printStackTrace();
+                log.error("Failed to select configuration", e);
+        }
+        
+        for( String k: ar) { sw.append(",").append(k); }
+        
+        return sw.toString();
     }
     
     public static void initSessionTable(Connection con) throws SQLException {
@@ -166,8 +259,9 @@ public class DBConfig extends AppVersion {
     //  Default seed data                                                   //
     // ------------------------------------------------------------------ //
 
-    private static void seedDefaultsIfEmpty() {
-        String countSql = "SELECT COUNT(*) FROM config_entries";
+    private static void seedDefaultsIfEmpty(String app) {
+        app = ( isNullOrEmpty(app) )?"ROOT":app;
+        String countSql = "SELECT COUNT(*) FROM config_entries where config_app='"+app+"'";
         try (Connection c = getConnection();
              Statement s = c.createStatement();
              ResultSet rs = s.executeQuery(countSql)) {
@@ -184,15 +278,16 @@ public class DBConfig extends AppVersion {
         }
 
         log.info("Database is empty – inserting default configuration …");
-        insertDefaults();
+        insertDefaults(app);
+        addApp(app);
     }
 
-    public   static void addConfigs(Object[][] obj) {
+    public static void addConfigs(Object[][] obj) {
         
          String sql = """
             INSERT INTO config_entries
-                (config_key, config_value, description, category, data_type, required)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (config_app,config_key, config_value, description, category, data_type, required)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """;
 
          try (Connection c = getConnection();
@@ -205,7 +300,8 @@ public class DBConfig extends AppVersion {
                     ps.setString(3, (String) row[2]);
                     ps.setString(4, (String) row[3]);
                     ps.setString(5, (String) row[4]);
-                    ps.setBoolean(6, (Boolean) row[5]);
+                    ps.setString(6, (String) row[5]);
+                    ps.setBoolean(7, (Boolean) row[6]);
                     ps.addBatch();
                 }
             }
@@ -217,77 +313,105 @@ public class DBConfig extends AppVersion {
         }
          
     }
-    private static void insertDefaults() {
-        String sql = """
+    
+    public static void addApp(String app) {
+        String sql = "INSERT INTO apps (app,app_version) VALUES ('"+app+"','"+dbSchemaVersion+"')";
+        try (Connection c = getConnection();
+             PreparedStatement ps = c.prepareStatement(sql) ) {
+            
+              ps.execute();
+            
+        }catch (SQLException e) {
+            System.out.println(e.getMessage()+"");
+            log.error("Failed to insert application", e);
+        }
+    }
+     public static void unApp(String app) {
+        String sql = "delete from apps where app='"+app+"'";
+        String sql1= "delete from config_entries where config_app='"+app+"'";
+        try (Connection c = getConnection() ) {
+             PreparedStatement ps = c.prepareStatement(sql);
+                               ps.execute();
+                               
+                               ps = c.prepareStatement(sql1);
+                               ps.execute();
+            
+        }catch (SQLException e) {
+            log.error("Failed to insert application", e);
+        }
+    }
+    
+    private static void insertDefaults(String app) {
+        /*String sql = """
             INSERT INTO config_entries
-                (config_key, config_value, description, category, data_type, required)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (config_app, config_key, config_value, description, category, data_type, required)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """;
-
+        */
         Object[][] defaults = {
             // Application
-            {"app.name",        "Config App",     "Display name of the application",      "Application", "STRING",  true},
-            {"app.version",     "1.0",               "Current application version",          "Application", "STRING",  false},
-            {"app.debug",       "false",             "Enable debug mode (true/false)",       "Application", "BOOLEAN", false},
-            {"app.base.url",    "http://localhost:18080/config", "Base URL of the application",  "Application", "URL",     true},
+            {app, "app.name",           "Config App",                    "Display name of the application",  "Application", "STRING",  true},
+            {app, "app.version",        "1.0",                           "Current application version",      "Application", "STRING",  false},
+            {app, "app.debug",          "false",                         "Enable debug mode (true/false)",   "Application", "BOOLEAN", false},
+            {app, "app.base.url",       "http://localhost:18080/config", "Base URL of the application",      "Application", "URL",     true},
 
             // Database
-            {"db.type",             "mysql",          "Database server hostname",                  "Database",    "STRING",  true},
-            {"db.host",             "localhost",      "Database server hostname",                  "Database",    "STRING",  true},
-            {"db.port",             "3306",           "Database server port",                      "Database",    "INTEGER", true},
-            {"db.name",             "app",            "Database / schema name",                    "Database",    "STRING",  true},
-            {"db.user",             "nb",             "Database username",                         "Database",    "STRING",  true},
-            {"db.password",         "changeit",       "Database password",                         "Database",    "PASSWORD",true},
-            {"db.pool.size",        "10",             "Maximum number of DB pool connections",     "Database",    "INTEGER", false},
+            {app, "db.type",             "mysql",          "Database server hostname",                  "Database",    "STRING",  true},
+            {app, "db.host",             "localhost",      "Database server hostname",                  "Database",    "STRING",  true},
+            {app, "db.port",             "3306",           "Database server port",                      "Database",    "INTEGER", true},
+            {app, "db.name",             "app",            "Database / schema name",                    "Database",    "STRING",  true},
+            {app, "db.user",             "nb",             "Database username",                         "Database",    "STRING",  true},
+            {app, "db.password",         "changeit",       "Database password",                         "Database",    "PASSWORD",true},
+            {app, "db.pool.size",        "10",             "Maximum number of DB pool connections",     "Database",    "INTEGER", false},
 
-            {"Proxy.type",             "transparent",    "Proxy server type",                      "Proxy",    "STRING",  true},
-            {"Proxy.host",             "localhost",      "Proxy server hostname",                  "Proxy",    "STRING",  true},
-            {"Proxy.port",             "1080",           "Proxy server port",                      "Proxy",    "INTEGER", true},
-            {"Proxy.name",             "app",            "Proxy / schema name",                    "Proxy",    "STRING",  true},
-            {"Proxy.user",             "admin",          "Proxy username",                         "Proxy",    "STRING",  true},
-            {"Proxy.password",         "changeit",       "Proxy password",                         "Proxy",    "PASSWORD",true},
-            {"Proxy.apps",         "HTTP,HTTPS,SFTP,SMTP,IMAP",    "Proxy application",                      "Proxy",    "STRING",  true},
+            {app, "Proxy.type",             "transparent",    "Proxy server type",                      "Proxy",    "STRING",  true},
+            {app, "Proxy.host",             "localhost",      "Proxy server hostname",                  "Proxy",    "STRING",  true},
+            {app, "Proxy.port",             "1080",           "Proxy server port",                      "Proxy",    "INTEGER", true},
+            {app, "Proxy.name",             "app",            "Proxy / schema name",                    "Proxy",    "STRING",  true},
+            {app, "Proxy.user",             "admin",          "Proxy username",                         "Proxy",    "STRING",  true},
+            {app, "Proxy.password",         "changeit",       "Proxy password",                         "Proxy",    "PASSWORD",true},
+            {app, "Proxy.apps",         "HTTP,HTTPS,SFTP,SMTP,IMAP",    "Proxy application",                      "Proxy",    "STRING",  true},
             
             // Ldap
-            {"ldap.host",      "ldap.example.com", "Ldap host",                          "Ldap",        "STRING",  false},
-            {"ldap.port",      "389",              "Ldap port",                          "Ldap",        "INTEGER", false},
-            {"ldap.user",      "cn=admin",         "Ldap username / from address",              "Ldap",        "STRING",  false},
-            {"ldap.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
-            {"ldap.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
-            {"ldap.server.config",    "",                 "Ldap server config",                        "Ldap",        "STRING",false},
-            {"ldap.server.host",      "ldap.example.com", "Ldap server host",                          "Ldap",        "STRING",  false},
-            {"ldap.server.port",      "389",              "Ldap server port",                          "Ldap",        "INTEGER", false},
-            {"ldap.server.user",      "cn=admin",         "Ldap username / from address",              "Ldap",        "STRING",  false},
-            {"ldap.server.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
-            {"ldap.server.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
-            {"ldap.proxy.config",    "",                 "Ldap proxy config",                        "Ldap",        "STRING",false},
-            {"ldap.proxy.host",      "ldap.example.com",  "Ldap server host",                          "Ldap",        "STRING",  false},
-            {"ldap.proxy.port",      "389",               "Ldap server port",                          "Ldap",        "INTEGER", false},
-            {"ldap.proxy.user",      "cn=proxyadmin",     "Ldap username / from address",              "Ldap",        "STRING",  false},
-            {"ldap.proxy.password",  "",                  "Ldap password",                             "Ldap",        "PASSWORD",false},
-            {"ldap.proxy.tls",       "true",              "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
+            {app, "ldap.host",      "ldap.example.com", "Ldap host",                          "Ldap",        "STRING",  false},
+            {app, "ldap.port",      "389",              "Ldap port",                          "Ldap",        "INTEGER", false},
+            {app, "ldap.user",      "cn=admin",         "Ldap username / from address",              "Ldap",        "STRING",  false},
+            {app, "ldap.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
+            {app, "ldap.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
+            {app, "ldap.server.config",    "",                 "Ldap server config",                        "Ldap",        "STRING",false},
+            {app, "ldap.server.host",      "ldap.example.com", "Ldap server host",                          "Ldap",        "STRING",  false},
+            {app, "ldap.server.port",      "389",              "Ldap server port",                          "Ldap",        "INTEGER", false},
+            {app, "ldap.server.user",      "cn=admin",         "Ldap username / from address",              "Ldap",        "STRING",  false},
+            {app, "ldap.server.password",  "",                 "Ldap password",                             "Ldap",        "PASSWORD",false},
+            {app, "ldap.server.tls",       "true",             "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
+            {app, "ldap.proxy.config",    "",                 "Ldap proxy config",                        "Ldap",        "STRING",false},
+            {app, "ldap.proxy.host",      "ldap.example.com",  "Ldap server host",                          "Ldap",        "STRING",  false},
+            {app, "ldap.proxy.port",      "389",               "Ldap server port",                          "Ldap",        "INTEGER", false},
+            {app, "ldap.proxy.user",      "cn=proxyadmin",     "Ldap username / from address",              "Ldap",        "STRING",  false},
+            {app, "ldap.proxy.password",  "",                  "Ldap password",                             "Ldap",        "PASSWORD",false},
+            {app, "ldap.proxy.tls",       "true",              "Use STARTTLS",                              "Ldap",        "BOOLEAN", false},
 
             // Mail 
-            {"mail.smtp.host",      "smtp.example.com","SMTP server host",                          "Mail",        "STRING",  false},
-            {"mail.smtp.port",      "587",              "SMTP server port",                          "Mail",        "INTEGER", false},
-            {"mail.smtp.user",      "noreply@example.com","SMTP username / from address",            "Mail",        "STRING",  false},
-            {"mail.smtp.password",  "",                 "SMTP password",                             "Mail",        "PASSWORD",false},
-            {"mail.smtp.tls",       "true",             "Use STARTTLS",                              "Mail",        "BOOLEAN", false},
+            {app, "mail.smtp.host",      "smtp.example.com","SMTP server host",                          "Mail",        "STRING",  false},
+            {app, "mail.smtp.port",      "587",              "SMTP server port",                          "Mail",        "INTEGER", false},
+            {app, "mail.smtp.user",      "noreply@example.com","SMTP username / from address",            "Mail",        "STRING",  false},
+            {app, "mail.smtp.password",  "",                 "SMTP password",                             "Mail",        "PASSWORD",false},
+            {app, "mail.smtp.tls",       "true",             "Use STARTTLS",                              "Mail",        "BOOLEAN", false},
 
-            {"mail.imap.host",      "imap.example.com", "IMAP server host",                          "Mail",        "STRING",  false},
-            {"mail.imap.port",      "993",              "IMAP server port",                          "Mail",        "INTEGER", false},
-            {"mail.imap.user",      "noreply@example.com","IMAP username / from address",            "Mail",        "STRING",  false},
-            {"mail.imap.password",  "",                 "IMAP password",                             "Mail",        "PASSWORD",false},
-            {"mail.imap.tls",       "true",             "Use STARTTLS",                              "Mail",        "BOOLEAN", false},
+            {app, "mail.imap.host",      "imap.example.com", "IMAP server host",                          "Mail",        "STRING",  false},
+            {app, "mail.imap.port",      "993",              "IMAP server port",                          "Mail",        "INTEGER", false},
+            {app, "mail.imap.user",      "noreply@example.com","IMAP username / from address",            "Mail",        "STRING",  false},
+            {app, "mail.imap.password",  "",                 "IMAP password",                             "Mail",        "PASSWORD",false},
+            {app, "mail.imap.tls",       "true",             "Use STARTTLS",                              "Mail",        "BOOLEAN", false},
 
             // Security
-            {"security.session.timeout", "1800",        "HTTP session timeout in seconds",           "Security",    "INTEGER", false},
-            {"security.jwt.secret",      "",            "JWT signing secret key",                    "Security",    "PASSWORD",true},
-            {"security.allowed.origins", "http://localhost:8080","CORS allowed origins (comma-sep)","Security",    "STRING",  false},
+            {app, "security.session.timeout", "1800",        "HTTP session timeout in seconds",           "Security",    "INTEGER", false},
+            {app, "security.jwt.secret",      "",            "JWT signing secret key",                    "Security",    "PASSWORD",true},
+            {app, "security.allowed.origins", "http://localhost:8080","CORS allowed origins (comma-sep)","Security",    "STRING",  false},
 
             // Features
-            {"feature.registration", "true",            "Allow new user registration",               "Features",    "BOOLEAN", false},
-            {"feature.api.enabled",  "true",            "Enable REST API endpoints",                 "Features",    "BOOLEAN", false},
+            {app, "feature.registration", "true",            "Allow new user registration",               "Features",    "BOOLEAN", false},
+            {app, "feature.api.enabled",  "true",            "Enable REST API endpoints",                 "Features",    "BOOLEAN", false},
         };
         
         addConfigs(defaults);
@@ -303,11 +427,11 @@ public class DBConfig extends AppVersion {
         }
     }
     
-    public static boolean delProperty(String key) {
-        init();
+    public static boolean delProperty(String app, String key) {
+        init(app);
         boolean b = false;
         
-        String sql = "delete from config_entries where config_key='"+key.replaceAll(" ", "")+"'";
+        String sql = "delete from config_entries where config_key='"+key.replaceAll(" ", "")+"' and config_app='"+app+"'";
          try ( Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             b=ps.execute();
             ps.close();
@@ -319,38 +443,63 @@ public class DBConfig extends AppVersion {
         return b;
     }
     
-    public static boolean addProperty(String key, String value, String desc,String cat, String typ,String require) {
-        init();
+    public static boolean isAppExist(String app) {
+        app = ( isNullOrEmpty(app) )?"ROOT":app;
+        if ( app.equals("ROOT") ) { return true; }
+        String countSql = "SELECT COUNT(*) FROM apps where app='"+app+"'";
+        try (Connection c = getConnection();
+             Statement s = c.createStatement();
+             ResultSet rs = s.executeQuery(countSql)) {
+
+            rs.next();
+            int count = rs.getInt(1);
+            if (count > 0) {
+                log.info("app "+app+" is registered ");
+                return true;
+            }
+        } catch (SQLException e) {
+            log.error("Cannot check row count for apps ", e);
+            
+        }
+        return false;
+    }
+    
+    public static boolean addProperty(String app, String key, String value, String desc,String cat, String typ,String require) {
+        init(app);
         boolean b = false;
-        
+        if ( isAppExist(app) ) {
          String sql = "INSERT INTO config_entries "
-                 + "(config_key, config_value, description, category, data_type, required)"
-                 + " VALUES ('"+key+"', '"+value+"', '"+desc+"',"
+                 + "(config_app, config_key, config_value, description, category, data_type, required)"
+                 + " VALUES ('"+app+"','"+key+"', '"+value+"', '"+desc+"',"
                  + "'"+cat+"', '"+typ+"', "+getBoolean(require)+")            ";
          try ( Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             b=ps.execute();
             ps.close();
             c.commit();
             prop=null;
-        } catch (SQLException e) {
+         } catch (SQLException e) {
             log.error("Failed to insert configuration "+key+"="+value, e);
-        }   
+         }
+        } else {
+            System.out.println("ERROR: application "+app+" is not registered");
+        } 
         return b;
     }
     
     
-    public static boolean setProperty(String key, String value) {
-        init();
+    public static boolean setProperty(String app, String key, String value) {
+        init(app);
         boolean b = false;
         if ( key.toLowerCase().contains("password") ) {
             if ( ! crypt.isCrypted(value) ) {
                 value=crypt.getCrypted(value);
             }
         }
-        String sql ="UPDATE config_entries SET config_value=? WHERE config_key=?";
+        String sql ="UPDATE config_entries SET config_value=? WHERE config_app=? and config_key=?";
         try ( Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, value);
-            ps.setString(2, key);
+            ps.setString(2, app);
+            ps.setString(3, key);
             b=ps.execute();
             ps.close();
             c.commit();
@@ -360,21 +509,22 @@ public class DBConfig extends AppVersion {
         }
         return b;
     }
-    public  static Properties getProperty(String part) {
+    public  static Properties getProperty(String app, String part) {
         Properties p = new Properties();
         if ( isNullOrEmpty(p) ) { return p;} 
         String sql = """
-            SELECT config_key,config_value from config_entries
+            SELECT config_app,config_key,config_value from config_entries
             """;
         
             try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
                 ResultSet rs =ps.executeQuery();
                 
                 while (  rs.next() ) {
+                    String a = rs.getString("config_app");
                     String k = rs.getString("config_key");
                     log.info("db-key k:"+k+":");
                     String value =  rs.getString("config_value");
-                    if ( k.contains(part) ) {
+                    if ( a.equals(app) && k.contains(part) ) {
                         if ( k.toLowerCase().contains("password") && isNotNullOrEmpty(value)) {
                             value=crypt.getUnCrypted(value);                        
                         }
@@ -392,16 +542,17 @@ public class DBConfig extends AppVersion {
     }
 
     private static Properties prop=null;
-    public static Properties getConfig(String part) {
+    public static Properties getConfig(String app, String part) {
         init();
         if ( isNullOrEmpty(prop) || ! prop.getProperty("_part", "").equals(part) ) {
-             prop=getProperty(part);
+             prop=getProperty(app, part);
              prop.put("_part", part);
         }
         return prop;
     } 
-    public static String getDbUrl() {
-        Properties p = getConfig("db");
+    public static String getDbUrl() { return getDbUrl(defapp); }
+    public static String getDbUrl(String app) {
+        Properties p = getConfig(app, "db");
         
         return "jdbc:"+p.getProperty("db.driver", "mysql")+"://"+
                 p.getProperty("db.host", "localhost")+":"+
@@ -410,67 +561,83 @@ public class DBConfig extends AppVersion {
                 ;
     }
 
-    public static String getDbUsername() { 
-        Properties p = getConfig("db");
+    public static String getDbUsername() { return getDbUsername(defapp); } 
+    public static String getDbUsername(String app) { 
+        Properties p = getConfig(app, "db");
         return p.getProperty("db.user", ""); 
     }
-    public static void setDbUsername(String value) { 
-        if (value != null ) { setProperty("db.user", value); }
+    
+    public static void setDbUsername(String value) {  setDbUsername(defapp,value); }
+    public static void setDbUsername(String app, String value) { 
+        if (value != null ) { setProperty(app, "db.user", value); }
     }
     
-    public static String getDbName() { 
-        Properties p = getConfig("db");
+    public static String getDbName() { return getDbName(defapp); }
+    public static String getDbName(String app) { 
+        Properties p = getConfig(app, "db");
         return p.getProperty("db.name", ""); 
     }
-    public static void setDbName(String value) { 
-        if (value != null ) { setProperty("db.name", value); }
+    public static void setDbName(String value) { setDbName(defapp, value); }
+    public static void setDbName(String app, String value) { 
+        if (value != null ) { setProperty(app, "db.name", value); }
     }
 
-    public static String getDbPassword() { 
-        Properties p = getConfig("db");
+    public static String getDbPassword() { return getDbPassword(defapp); }
+    public static String getDbPassword(String app) { 
+        Properties p = getConfig(app, "db");
         String a = p.getProperty("db.password", "");
         log.info("DB password:"+a+":");
         return a; 
     }
-    public static void setDbPassword(String value) { 
-        if ( value != null ) { setProperty("db.password", value); }
+    public static void setDbPassword(String value) { setDbPassword(defapp, value); }
+    public static void setDbPassword(String app, String value) { 
+        if ( value != null ) { setProperty(app, "db.password", value); }
     }
     
-    public static String getDbDriver() { 
-        Properties p = getConfig("db");
+    public static String getDbDriver() { return getDbDriver(defapp); } 
+    public static String getDbDriver(String app) { 
+        Properties p = getConfig(app,"db");
         return p.getProperty("db.driver", "mysql"); 
     }
-    public static void setDbDriver(String value) { 
-        if ( isNotNullOrEmpty(value) ) { setProperty("db.driver", value); }
+    public static void setDbDriver(String value) { setDbDriver(defapp,value); }
+    public static void setDbDriver(String app, String value) { 
+        if ( isNotNullOrEmpty(value) ) { setProperty(app, "db.driver", value); }
     }
-    public static String getDbHost() { 
-        Properties p = getConfig("db");
+    public static String getDbHost() { return getDbHost(defapp); }
+    public static String getDbHost(String app) { 
+        Properties p = getConfig(app, "db");
         return p.getProperty("db.host", "localhost"); 
     }
-    public static void setDbHost(String value) { 
-        if (value != null ) { setProperty("db.host", value); }
+    public static void setDbHost(String value) { setDbHost(defapp,value); }
+    public static void setDbHost(String app,String value) { 
+        if (value != null ) { setProperty(app, "db.host", value); }
     }
     
-    public static String getDbPort() { 
-        Properties p = getConfig("db");
+    public static String getDbPort() { return getDbPort(defapp); } 
+    public static String getDbPort(String app) { 
+        Properties p = getConfig(app, "db");
         return p.getProperty("db.port", "3306"); 
     }
     
-    public static void setDbPort(String value) { 
-        if (value != null && getInt(value) >0 ) { setProperty("db.port", value); }
+    public static void setDbPort(String value) { setDbPort(defapp,value); }
+    public static void setDbPort(String app, String value) { 
+        if (value != null && getInt(value) >0 ) { setProperty(app, "db.port", value); }
     }
     
-    public static String getDbJDBC() { 
-        
-        String a =  "jdbc:"+getDbDriver()+"://"+
-                    getDbHost()+":"+getDbPort()+"/"+
-                    getDbName();
+    public static String getDbJDBC() { return getDbJDBC(defapp); }
+    public static String getDbJDBC(String app) { 
+        app=( isNullOrEmpty(app) )? defapp: app; 
+        String a =  "jdbc:"+getDbDriver(app)+"://"+
+                    getDbHost(app)+":"+getDbPort(app)+"/"+
+                    getDbName(app);
         log.info("DB jdbc =>"+a+"<= ");
         return a ;
     }
-    public static String getDbSchema() {   return getDbName();     }
-    public static void setDbSchema(String value) { 
-        if (value != null ) { setProperty("db.name", value); }
+    public static String getDbSchema()           {   return getDbName();     }
+    public static String getDbSchema(String app) {   return getDbName(app);  }
+    public static void setDbSchema(String value) {  setDbSchema(defapp,value); }
+    public static void setDbSchema(String app, String value) { 
+        if (value != null ) { setProperty(app, "db.name", value); }
     }
     
     
@@ -489,11 +656,15 @@ public class DBConfig extends AppVersion {
         return ret; 
     }
     
-    String getValue(String k) {
-        init();
+    String getValue(String k) { return getValue(defapp,k); }
+    String getValue(String app, String k) {
+        if ( ! init(app) ) { 
+            log.error("Application "+app+" not registered" );
+            return null; 
+        }
         k=k.replaceAll(" ", "");
         StringBuilder sw=new StringBuilder();
-        String sql = "SELECT config_key,config_value FROM config_entries;";
+        String sql = "SELECT config_key,config_value FROM config_entries where config_app='"+app+"';";
         try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
                 ResultSet rs =ps.executeQuery();
                 
@@ -513,11 +684,16 @@ public class DBConfig extends AppVersion {
         }
         return sw.toString();
     }
-    boolean setValue(String k,String v) {
-        init();
+    boolean setValue(String app,String k,String v) {
+        app  = ( isNullOrEmpty(app) ) ? defapp: app;         
+        if ( ! init(app) ) {
+            log.error("Application "+app+" not registered" );
+            return false;
+        }
+        
         k=k.replaceAll(" ", "");
         StringBuilder sw=new StringBuilder();
-        String sql = "update config_entries set config_value='"+v+"' where config_key='"+k.replaceAll(" ", "")+"'";
+        String sql = "update config_entries set config_value='"+v+"' where config_key='"+k.replaceAll(" ", "")+"' and config_app='"+app+"'";
         //System.out.print("sql:"+sql);
         try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
                 int eu =ps.executeUpdate();
@@ -532,21 +708,32 @@ public class DBConfig extends AppVersion {
         return false;
     }
 
-    public static Properties getAllKeyProperty() { return getAllKeyProperty(""); }
-    public static Properties getAllKeyProperty(String part) {
-        init();
-        part = ( isNullOrEmpty(part) )?"":part;
+    public static Properties getAllKeyProperty() { return getAllKeyProperty(defapp,""); }
+    public static Properties getAllKeyProperty(String app) { return getAllKeyProperty(app,""); }
+    public static Properties getAllKeyProperty(String app, String part) {
+        app  = ( isNullOrEmpty(app) ) ? defapp: app; 
         Properties sw=new Properties();
-        String sql = "SELECT config_key,config_value FROM config_entries";
+        if ( initialized ) {
+            if ( ! init(app) ) {
+                log.error("Application "+app+" not registered" );
+                return sw;
+            }
+        }    
+        part = ( isNullOrEmpty(part) )?"":part;        
+        
+        String sql = "SELECT config_app,config_key,config_value FROM config_entries";
         
         try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
                 ResultSet rs =ps.executeQuery();
                 
                 while (  rs.next() ) {
+                    String a = rs.getString("config_app");
                     String k = rs.getString("config_key");
                     String v = rs.getString("config_value");
-                    if ( k.startsWith(part) ) {
-                        sw.put(k, v);
+                    if ( app.equals(a) ) {
+                        if ( k.startsWith(part) ) {
+                            sw.put(k, v);
+                        }
                     }
                 }
                 
@@ -560,9 +747,9 @@ public class DBConfig extends AppVersion {
         return sw;
     }
     
-    public static String getAllKeys() { return getAllKeys(""); }
-    public static String getAllKeys(String part) {
-        Properties p = getAllKeyProperty(part);
+    public static String getAllKeys() { return getAllKeys(defapp,""); }
+    public static String getAllKeys(String app,String part) {
+        Properties p = getAllKeyProperty(app,part);
         Enumeration<String> e = sortProp(p);
         StringBuilder sw=new StringBuilder();
         
@@ -661,14 +848,15 @@ public class DBConfig extends AppVersion {
     
     public static DBConfig getInstance(){ 
         return getInstance( 
+                defapp,
                 "jdbc:h2:file:" + dir.getFQDNDirName() + "/" + DB_NAME
                                 + ";AUTO_SERVER=TRUE;DB_CLOSE_ON_EXIT=TRUE;MODE=MYSQL;",
                 "sa",
                 GetPassword.getStrongPassword() 
         );
     }
-    public static DBConfig getInstance(String h2Jdbc, String h2User, String h2Pass) {
-          DBConfig conf=new DBConfig();
+    public static DBConfig getInstance(String app, String h2Jdbc, String h2User, String h2Pass) {
+          DBConfig conf=new DBConfig(app);
                    conf.jdbcUrl=h2Jdbc;
                    conf.DB_USER=h2User;
                    conf.DB_PASSWORD=h2Pass;
