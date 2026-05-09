@@ -21,10 +21,10 @@ public class DbCache extends AppVersion{
     private Db db;
    
    
-   public DbCache() {
+   public DbCache(String app) {
        this.map = new HashMap();
        this.crypt = new Crypt();
-       this.conf = new DBConfig();
+       this.conf = new DBConfig(app);
        this.db    = new Db(conf.getMainJDBC(), conf.getMainUser(), conf.getMainPass());
    }
     

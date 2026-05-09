@@ -51,7 +51,6 @@
                     <goals>
                       <goal>single</goal>
                     </goals>
-
                     <configuration>
                       <descriptors>
                           <descriptor>lib/jar-with-dependencies.xml</descriptor>
@@ -104,4 +103,6 @@
             </plugin>
         </plugins>
     </build>
+
+
 </project>
