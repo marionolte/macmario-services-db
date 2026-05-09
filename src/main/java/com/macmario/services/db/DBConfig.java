@@ -253,7 +253,7 @@ public class DBConfig extends AppVersion {
                      """;
         try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
                 ResultSet rs =ps.executeQuery();
-                System.out.println("DBConfig::APPS : "+rs.toString());
+                log.debug("DBConfig::APPS : "+rs.toString());
                 while (  rs.next() ) {
                     String k = rs.getString("app");
                     if ( ! ar.contains(k) && ! k.equals("ROOT") ) {

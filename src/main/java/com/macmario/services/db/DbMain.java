@@ -54,9 +54,17 @@ public class DbMain extends AppVersion {
                             case "app" : {       setApp(conf,line.substring("app ".length()));  break; }
                             case "register"   : {  regApp(conf,line.substring("register ".length()));  break; }
                             case "unregister" : {unregApp(conf,line.substring("register ".length()));  break; }
-                            default:{ 
-                                System.out.println("command: "+sp[0]+" not found; expect <set,get,list,add,del>");
-                                break; 
+                            case "help":       {
+                                                if ( line.length() == sp[0].length()) {
+                                                    printHelp(null);
+                                                } else {
+                                                    printHelp(line.substring("help ".length()).trim());
+                                                }
+                                                break;
+                                               }
+                            default:{
+                                System.out.println("command: "+sp[0]+" not found; type 'help' for available commands.");
+                                break;
                             }
                         }
                     } catch(StringIndexOutOfBoundsException ne) {
@@ -157,6 +165,44 @@ public class DbMain extends AppVersion {
     private static void getListKeys(DBConfig conf,String line) {
         System.out.println("List all keys from config for Application "+app);
         System.out.println(conf.getAllKeys(app,line));
+        System.out.println("");
+    }
+
+    private static final String[][] HELP = {
+        {"set",        "set <key>=<value>",                                    "Set the value of an existing configuration key."},
+        {"get",        "get <key>",                                            "Print the value of a configuration key."},
+        {"list",       "list [prefix]",                                        "List all keys (optionally filtered by prefix, e.g. list db)."},
+        {"add",        "add <key>=<value>;<desc>;<category>;<type>;<required>","Add a new configuration key. Type: STRING|INTEGER|BOOLEAN|URL|PASSWORD. Required: true|false."},
+        {"del",        "del <key>",                                            "Delete a configuration key."},
+        {"app",        "app <name>",                                           "Switch the active application context (must be registered)."},
+        {"apps",       "apps",                                                 "Show all registered applications."},
+        {"register",   "register <name>",                                      "Register a new application and seed it with default configuration entries."},
+        {"unregister", "unregister <name>",                                    "Unregister an application and delete all its configuration entries."},
+        {"version",    "version",                                              "Print version information and exit."},
+        {"help",       "help [command]",                                       "Show help for all commands or a specific command."},
+        {"quit",       "quit | q",                                             "Exit the program."},
+    };
+
+    private static void printHelp(String command) {
+        if ( command == null || command.isEmpty() ) {
+            System.out.println("Available commands:");
+            for ( String[] entry : HELP ) {
+                System.out.printf("  %-30s %s%n", entry[1], entry[2]);
+            }
+        } else {
+            boolean found = false;
+            for ( String[] entry : HELP ) {
+                if ( entry[0].equalsIgnoreCase(command) ) {
+                    System.out.println("Usage:       " + entry[1]);
+                    System.out.println("Description: " + entry[2]);
+                    found = true;
+                    break;
+                }
+            }
+            if ( !found ) {
+                System.out.println("No help available for '" + command + "'. Type 'help' for all commands.");
+            }
+        }
         System.out.println("");
     }
 

@@ -17,7 +17,7 @@ public class AppVersion extends com.macmario.general.Version {
     final public static String prodauthor="Mario Nolte";
     final public static int majorAppVersion=0;
     final public static int minorAppVersion=0;
-    final public static int patchAppVersion=1;
+    final public static int patchAppVersion=2;
     final public static int fixedAppVersion=0;
     final public static int   libAppVersion=0;
     final public static int  betaAppVersion=0;
