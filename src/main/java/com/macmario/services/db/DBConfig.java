@@ -166,24 +166,63 @@ public class DBConfig extends AppVersion {
         String ddl = """
             CREATE TABLE IF NOT EXISTS config_entries (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-                config_app  VARCHAR(255) NOT NULL DEFAULT 'ROOT',     
-                config_key  VARCHAR(255) NOT NULL UNIQUE,
+                config_app  VARCHAR(255) NOT NULL DEFAULT 'ROOT',
+                config_key  VARCHAR(255) NOT NULL,
                 config_value VARCHAR(2048),
                 description VARCHAR(1024),
                 category    VARCHAR(128) NOT NULL DEFAULT 'General',
                 data_type   VARCHAR(32)  NOT NULL DEFAULT 'STRING',
                 required    BOOLEAN      NOT NULL DEFAULT FALSE,
                 created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-                updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT uq_app_key UNIQUE (config_app, config_key)
             )
             """;
         try (Connection c = getConnection(); Statement s = c.createStatement()) {
             s.execute(ddl);
             log.info("schema table ready.");
+            migrateSchema(c);
             initSessionTable(c);
             initAppsTable(c);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create schema", e);
+        }
+    }
+
+    private static void migrateSchema(Connection c) {
+        // Migration v1→v2: replace single-column unique on config_key with composite (config_app, config_key).
+        // H2 auto-names inline UNIQUE constraints, so we query INFORMATION_SCHEMA to find them.
+        try {
+            ArrayList<String> toDrop = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT tc.CONSTRAINT_NAME " +
+                    "FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
+                    "JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu " +
+                    "  ON tc.CONSTRAINT_NAME = ccu.CONSTRAINT_NAME " +
+                    " AND tc.TABLE_SCHEMA   = ccu.TABLE_SCHEMA " +
+                    "WHERE tc.TABLE_NAME      = 'CONFIG_ENTRIES' " +
+                    "  AND tc.CONSTRAINT_TYPE = 'UNIQUE' " +
+                    "  AND ccu.COLUMN_NAME    = 'CONFIG_KEY' " +
+                    "  AND tc.CONSTRAINT_NAME <> 'UQ_APP_KEY' " +
+                    "GROUP BY tc.CONSTRAINT_NAME HAVING COUNT(*) = 1")) {
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) toDrop.add(rs.getString(1));
+            }
+            for (String name : toDrop) {
+                try (Statement st = c.createStatement()) {
+                    st.execute("ALTER TABLE config_entries DROP CONSTRAINT IF EXISTS \"" + name + "\"");
+                    log.info("Dropped legacy unique constraint: {}", name);
+                } catch (SQLException e) {
+                    log.warn("Could not drop constraint {}: {}", name, e.getMessage());
+                }
+            }
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE config_entries ADD CONSTRAINT IF NOT EXISTS uq_app_key UNIQUE (config_app, config_key)");
+            } catch (SQLException e) {
+                log.warn("Could not add composite unique constraint: {}", e.getMessage());
+            }
+        } catch (SQLException e) {
+            log.warn("Schema migration attempt failed: {}", e.getMessage());
         }
     }
     
@@ -294,7 +333,7 @@ public class DBConfig extends AppVersion {
              PreparedStatement ps = c.prepareStatement(sql)) {
 
             for (Object[] row : obj) {
-                if ( obj.length >= 6 ) {
+                if ( row.length >= 7 ) {
                     ps.setString(1, (String) row[0]);
                     ps.setString(2, (String) row[1]);
                     ps.setString(3, (String) row[2]);
@@ -436,7 +475,7 @@ public class DBConfig extends AppVersion {
             b=ps.execute();
             ps.close();
             c.commit();
-            prop=null;
+            invalidateCache();
         } catch (SQLException e) {
             log.error("Failed to delete configuration of "+key, e);
         }   
@@ -476,7 +515,7 @@ public class DBConfig extends AppVersion {
             b=ps.execute();
             ps.close();
             c.commit();
-            prop=null;
+            invalidateCache();
          } catch (SQLException e) {
             log.error("Failed to insert configuration "+key+"="+value, e);
          }
@@ -503,7 +542,7 @@ public class DBConfig extends AppVersion {
             b=ps.execute();
             ps.close();
             c.commit();
-            prop=null;
+            invalidateCache();
         } catch (SQLException e) {
             log.error("Failed to update exist configuration", e);
         }
@@ -541,15 +580,18 @@ public class DBConfig extends AppVersion {
         return p;
     }
 
-    private static Properties prop=null;
+    private static final HashMap<String, Properties> propCache = new HashMap<>();
     public static Properties getConfig(String app, String part) {
         init();
-        if ( isNullOrEmpty(prop) || ! prop.getProperty("_part", "").equals(part) ) {
-             prop=getProperty(app, part);
-             prop.put("_part", part);
+        String cacheKey = app + ":" + part;
+        if (!propCache.containsKey(cacheKey)) {
+            Properties p = getProperty(app, part);
+            propCache.put(cacheKey, p);
         }
-        return prop;
-    } 
+        return propCache.get(cacheKey);
+    }
+
+    private static void invalidateCache() { propCache.clear(); }
     public static String getDbUrl() { return getDbUrl(defapp); }
     public static String getDbUrl(String app) {
         Properties p = getConfig(app, "db");
