@@ -26,7 +26,7 @@ public class DbMain extends AppVersion {
             // Read lines until "quit" is entered
             while (true) {
                 System.out.print(" > ");
-                line = reader.readLine().trim();
+                line = applyEditing(reader.readLine()).trim();
                 System.out.println("");
                 
                 if ("quit".equalsIgnoreCase(line.trim()) || "q".equals(line.trim()) ) {
@@ -166,6 +166,18 @@ public class DbMain extends AppVersion {
         System.out.println("List all keys from config for Application "+app);
         System.out.println(conf.getAllKeys(app,line));
         System.out.println("");
+    }
+
+    private static String applyEditing(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (char ch : raw.toCharArray()) {
+            if (ch == '\b' || ch == (char) 127) {
+                if (sb.length() > 0) sb.deleteCharAt(sb.length() - 1);
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
     }
 
     private static final String[][] HELP = {

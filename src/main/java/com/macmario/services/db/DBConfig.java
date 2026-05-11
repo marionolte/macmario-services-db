@@ -73,6 +73,7 @@ public class DBConfig extends AppVersion {
         
         defapp=( isNotNullOrEmpty(ap) )?ap:this.defapp;
         init(defapp);
+        if ( isNotNullOrEmpty(ap) ) init(ap);
         
     }
 
@@ -482,6 +483,7 @@ public class DBConfig extends AppVersion {
         return b;
     }
     
+    
     public static boolean isAppExist(String app) {
         app = ( isNullOrEmpty(app) )?"ROOT":app;
         if ( app.equals("ROOT") ) { return true; }
@@ -888,13 +890,21 @@ public class DBConfig extends AppVersion {
         }
     }
     
+    public static DBConfig getInstance(String app){ 
+        return getInstance( app,  GetPassword.getStrongPassword() );
+    }
     public static DBConfig getInstance(){ 
+        return getInstance( defapp, GetPassword.getStrongPassword() );
+    }
+    public static DBConfig getInstance(String app,String pw){
+        pw=(pw==null)?"":pw;
+        app=(app == null || app.isEmpty() )?defapp:app;
         return getInstance( 
-                defapp,
+                app,
                 "jdbc:h2:file:" + dir.getFQDNDirName() + "/" + DB_NAME
                                 + ";AUTO_SERVER=TRUE;DB_CLOSE_ON_EXIT=TRUE;MODE=MYSQL;",
                 "sa",
-                GetPassword.getStrongPassword() 
+                pw 
         );
     }
     public static DBConfig getInstance(String app, String h2Jdbc, String h2User, String h2Pass) {
@@ -904,5 +914,18 @@ public class DBConfig extends AppVersion {
                    conf.DB_PASSWORD=h2Pass;
           
           return conf;
+    }
+    
+    public static String getAppPassword(String app){
+        app=(app == null || app.isEmpty() )?defapp:app;
+        DBConfig conf = new DBConfig(app);
+        String k="master.password";
+        
+        String pw=conf.getValue(app, k);
+        if ( pw == null || pw.isEmpty() ) {
+               pw=GetPassword.getStrongPassword();
+               conf.setValue(app, k, pw);
+        }
+        return pw;
     }
 }
