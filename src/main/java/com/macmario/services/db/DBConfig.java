@@ -919,13 +919,17 @@ public class DBConfig extends AppVersion {
     public static String getAppPassword(String app){
         app=(app == null || app.isEmpty() )?defapp:app;
         DBConfig conf = new DBConfig(app);
-        String k="master.password";
+        String k="master."+app+".password";
         
-        String pw=conf.getValue(app, k);
-        if ( pw == null || pw.isEmpty() ) {
-               pw=GetPassword.getStrongPassword();
-               conf.setValue(app, k, pw);
-        }
-        return pw;
+        if ( app.equals("ROOT") ) {
+            return conf.DB_PASSWORD;
+        } else {
+            String pw=conf.getValue("ROOT", k);
+            if ( pw == null || pw.isEmpty() ) {
+                   pw=GetPassword.getMediumPassword();
+                   conf.setValue("ROOT", k, pw);
+            }
+            return pw;
+        }    
     }
 }
