@@ -140,15 +140,27 @@ public class DBConfig extends AppVersion {
         if (jdbcUrl == null) {
             throw new IllegalStateException("DatabaseManager.init() has not been called yet.");
         }
-        return DriverManager.getConnection(jdbcUrl, DB_USER, DB_PASSWORD);
+        log.info("JDBC:"+jdbcUrl+": u:"+DB_USER+": p->"+(DB_PASSWORD!= null && !DB_PASSWORD.isBlank())+"|");
+        return getDbConnection(jdbcUrl, DB_USER, DB_PASSWORD);
     }
     public static Connection getDbConnection() throws SQLException {
         //init();
-        return DriverManager.getConnection(getDbUrl(), getDbUsername(), getDbPassword());
+        String j=getDbUrl();
+        String u=getDbUsername();
+        String p=getDbPassword();
+        log.info("Base JDBC:"+j+": u:"+u+": p->"+p+"|");
+        return getDbConnection(j, u, p);
     }
     public static Connection getDbConnection(String app) throws SQLException {
         //init(app);
-        return DriverManager.getConnection(getDbUrl(app), getDbUsername(app), getDbPassword(app));
+        String j=getDbUrl(app);
+        String u=getDbUsername(app);
+        String p=getDbPassword(app);
+        log.info("Base "+app+" JDBC:"+j+": u:"+u+": p->"+p+"|");
+        return getDbConnection(j, u, p);
+    }
+    private static Connection getDbConnection(String jdbc, String u, String p) throws SQLException  {
+        return DriverManager.getConnection(jdbc, u, p);
     }
     
     
@@ -700,8 +712,8 @@ public class DBConfig extends AppVersion {
         return ret; 
     }
     
-    String getValue(String k) { return getValue(defapp,k); }
-    String getValue(String app, String k) {
+    public String getValue(String k) { return getValue(defapp,k); }
+    public String getValue(String app, String k) {
         if ( ! init(app) ) { 
             log.error("Application "+app+" not registered" );
             return null; 
@@ -728,7 +740,7 @@ public class DBConfig extends AppVersion {
         }
         return sw.toString();
     }
-    boolean setValue(String app,String k,String v) {
+    public boolean setValue(String app,String k,String v) {
         app  = ( isNullOrEmpty(app) ) ? defapp: app;         
         if ( ! init(app) ) {
             log.error("Application "+app+" not registered" );
@@ -908,14 +920,97 @@ public class DBConfig extends AppVersion {
         );
     }
     public static DBConfig getInstance(String app, String h2Jdbc, String h2User, String h2Pass) {
+        log.info("new DBConfig Instance jdbc=>"+h2Jdbc+" u->"+h2User+"| p->"+h2Pass+"|");
           DBConfig conf=new DBConfig(app);
-                   conf.jdbcUrl=h2Jdbc;
-                   conf.DB_USER=h2User;
-                   conf.DB_PASSWORD=h2Pass;
+                
+                conf.setValue(app, "db.host",   getHostFromJdbc(h2Jdbc));
+                conf.setValue(app, "db.port",   getPortFromJdbc(h2Jdbc));
+                conf.setValue(app, "db.type",   getTypeFromJdbc(h2Jdbc));
+                conf.setValue(app, "db.name", getDBNameFromJdbc(h2Jdbc));
+                conf.setValue(app, "db.user",     h2User);
+                conf.setValue(app, "db.password", h2Pass);
+                
+                //   conf.jdbcUrl=h2Jdbc;
+                //   conf.DB_USER=h2User;
+                //   conf.DB_PASSWORD=h2Pass;
           
           return conf;
     }
     
+    
+    private static String getDBNameFromJdbc(String jdbc){
+        String ret="";        
+        // jdbc:mysql//:localhost:3306/dbname?options
+        //      mysql//:localhost:3306/dbname?options
+        if ( isNotNullOrEmpty(jdbc) ) {
+            String[] sp = jdbc.split("\\?")[0].split("/");
+            ret=sp[sp.length-1];
+        }
+        return ret;
+    }
+    
+    private static String getHostFromJdbc(String jdbc){
+        String ret="localhost";
+        
+        // jdbc:mysql//:localhost:3306/dbname?options
+        //      mysql//:localhost:3306/dbname?options
+        if ( isNotNullOrEmpty(jdbc) ) {
+            String[] sp = jdbc.split(":");
+            ret=( sp[0].toLowerCase().equals("jdbc") )?sp[2]:sp[1];
+        }
+        return ret;
+    }
+    
+    private static String getTypeFromJdbc(String jdbc){
+        String ret="mysql";
+        
+        // jdbc:mysql//:localhost:3306/dbname?options
+        //      mysql//:localhost:3306/dbname?options
+        if ( isNotNullOrEmpty(jdbc) ) {
+            String[] sp = jdbc.split(":");
+            String g=(( sp[0].toLowerCase().equals("jdbc") )?sp[1]:sp[0]).toLowerCase().replaceAll("/", "");
+            switch ( g ) {
+                case "mysql":
+                case "oracle":
+                case "h2":
+                case "postgresql": { ret=g; break; }
+                default: { break; }
+            }
+        }
+        return ret;
+    }
+    
+    private static String getPortFromJdbc(String jdbc){
+        String ret="";
+        String typ=getTypeFromJdbc(jdbc);
+        String ho =getHostFromJdbc(jdbc);
+        switch (typ) {
+            case "mysql" :      { ret="3306"; break; }
+            case "oracle":      { ret="1521"; break; }
+            case "postgresql":  { ret="5432"; break; }
+            default: {break;}
+        }
+                
+        // jdbc:mysql//:localhost:3306/dbname?options
+        // jdbc:mysql//:localhost:3306/dbname?options
+        //      mysql//:localhost:3306/dbname?options
+        if ( isNotNullOrEmpty(jdbc) ) {
+            String[] sp = jdbc.split("/");
+            log.info("jdbc:"+jdbc+":  0->"+sp[0]+"| ("+sp.length+")");
+            if (  sp[0].toLowerCase().equals("jdbc") ) {
+                     sp=sp[2].split(":");
+            } else {
+                     sp=sp[1].split(":");
+            }
+            if ( sp.length > 1 && sp[0].toLowerCase().equals("file") ){
+                String g=sp[1];
+                log.info("jdbc:"+jdbc+":  g->"+g+"| ("+sp.length+")");
+                if ( ! g.equals(ho) && getInt(g) > 0 ){ ret=g; }           
+            } else { ret=""; }
+            
+        }
+        return ret;
+    }
     public static String getAppPassword(String app){
         app=(app == null || app.isEmpty() )?defapp:app;
         DBConfig conf = new DBConfig(app);
